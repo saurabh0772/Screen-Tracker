@@ -2,6 +2,7 @@ import platform
 import os
 import json
 import getpass
+import shutil
 import time
 import subprocess
 import sys
@@ -164,51 +165,138 @@ def get_linux_desktop_entries():
             continue
     return app_map
 
+def get_linux_visible_window_titles():
+    """Returns titles of currently visible X11 windows using xdotool when available."""
+    if not shutil.which("xdotool"):
+        return []
+
+    try:
+        res = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", "--name", ""],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if res.returncode != 0:
+            return []
+
+        titles = []
+        for window_id in res.stdout.splitlines():
+            window_id = window_id.strip()
+            if not window_id:
+                continue
+            try:
+                title_res = subprocess.run(
+                    ["xdotool", "getwindowname", window_id],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+            except Exception:
+                continue
+
+            title = (title_res.stdout or "").strip()
+            if not title:
+                continue
+
+            normalized = title.strip()
+            if normalized.lower() in {
+                "desktop",
+                "panel",
+                "xfce4-panel",
+                "xfce4-screensaver",
+                "xfwm4",
+            }:
+                continue
+            titles.append(normalized)
+        return titles
+    except Exception:
+        return []
+
+
+def normalize_app_name_from_title(title):
+    """Converts a window title into a user-friendly application name."""
+    title = (title or "").strip()
+    if not title:
+        return ""
+
+    lower_title = title.lower()
+    if "visual studio code" in lower_title:
+        return "Visual Studio Code"
+    if "google chrome" in lower_title or "chrome" in lower_title:
+        return "Google Chrome"
+    if "firefox" in lower_title:
+        return "Firefox"
+    if "terminal" in lower_title:
+        return "Terminal"
+    if "bulk rename" in lower_title:
+        return "Bulk Rename"
+
+    if " - " in title:
+        parts = [part.strip() for part in title.split(" - ") if part.strip()]
+        if len(parts) >= 2:
+            candidate = parts[-1].strip()
+            if candidate.lower() not in {"panel", "terminal"}:
+                return candidate
+
+    return title
+
+
 def get_running_apps():
     """Extracts running applications based on OS."""
     if IS_WINDOWS:
         titles = gw.getAllTitles()
         app_names = set()
         ignored_titles = {"Program Manager", "Windows Input Experience", "Taskbar"}
-        
+
         for title in titles:
             title = title.strip()
             if not title or title in ignored_titles:
                 continue
-                
+
             app_name = title
             if " - " in title:
                 parts = title.split(" - ")
                 app_name = parts[-1].strip()
                 if app_name.endswith((".py", ".txt", ".md")) and len(parts) >= 2:
                     app_name = parts[-2].strip()
-            
+
             lower_title = title.lower()
             if "screenshot with app names" in lower_title or "chatgpt" in lower_title:
                 app_name = "ChatGPT"
             elif "antigravity ide" in lower_title:
                 app_name = "Antigravity IDE"
-                
+
             app_names.add(app_name)
         return sorted(app_names)
-        
+
     elif IS_LINUX:
-        # Extract processes from /proc
+        window_titles = get_linux_visible_window_titles()
+        if window_titles:
+            app_names = {
+                normalize_app_name_from_title(title)
+                for title in window_titles
+                if normalize_app_name_from_title(title)
+            }
+            if app_names:
+                return sorted(app_names)
+
+        # Fallback to /proc-based process detection only when no visible windows were found.
         proc_names = set()
         try:
             for pid in os.listdir("/proc"):
                 if pid.isdigit():
                     try:
-                        # Inspect cmdline to identify background tasks
                         with open(os.path.join("/proc", pid, "cmdline"), "r") as f:
                             cmdline = f.read().split("\x00")
-                        
+
                         if cmdline and cmdline[0]:
                             cmd_str = " ".join(cmdline)
                             exec_path = cmdline[0]
                             base = os.path.basename(exec_path)
-                            
-                            # Filter out system daemons and background services
+
                             is_background = False
                             if "--gapplication-service" in cmd_str:
                                 is_background = True
@@ -216,12 +304,10 @@ def get_running_apps():
                                 is_background = True
                             elif any(term in exec_path for term in ["evolution-data-server", "goa-daemon", "gnome-keyring", "ibus-"]):
                                 is_background = True
-                            
-                            # If it's a genuine interactive application process
+
                             if not is_background and base:
                                 proc_names.add(base)
-                                
-                                # Also read comm name if it aligns with non-background state
+
                                 with open(os.path.join("/proc", pid, "comm"), "r") as comm_f:
                                     comm = comm_f.read().strip()
                                     if comm:
@@ -231,10 +317,7 @@ def get_running_apps():
         except Exception:
             pass
 
-        # Parse desktop entries for mapping
         desktop_map = get_linux_desktop_entries()
-
-        # Common fallback app name mapping
         fallback_map = {
             "chrome": "Google Chrome",
             "chrome-stable": "Google Chrome",
@@ -268,7 +351,6 @@ def get_running_apps():
             elif "antigravity" in p_lower:
                 app_names.add("Antigravity IDE")
 
-        # Expanded list of ignored system and background process names
         ignored_names = {
             "bash", "sh", "systemd", "dbus", "gnome-shell", "Python Application",
             "Xwayland", "gjs", "at-spi2-registryd", "at-spi-bus-launcher",
@@ -277,9 +359,9 @@ def get_running_apps():
         filtered_names = {app for app in app_names if app not in ignored_names}
         if not filtered_names:
             filtered_names = app_names
-            
+
         return sorted(filtered_names)
-        
+
     return []
 
 def take_screenshot_and_print():
