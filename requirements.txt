@@ -1,3 +1,4 @@
 pillow>=10.2.0
-keyboard>=0.13.5
-PyGetWindow>=0.0.9
+keyboard>=0.13.5; sys_platform == 'win32' or sys_platform == 'linux'
+PyGetWindow>=0.0.9; sys_platform == 'win32'
+pynput>=1.7.6; sys_platform == 'darwin' or sys_platform == 'linux'
